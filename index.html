@@ -133,17 +133,15 @@ const md = text => DOMPurify.sanitize(marked.parse(text));
 
 const MODEL_URL = 'https://huggingface.co/jupiter-ai/Jupiter-V3/resolve/main/ai.gguf';
 const MODEL_FILE = 'ai.gguf';
-const CORES = navigator.hardwareConcurrency || 4;
+const N_THREADS = 6;
 
 const AD = { text: '이곳에 월 1만원으로 독점 광고하기', url: 'mailto:minupark@anplick.com' };
 
 const $ = id => document.getElementById(id);
 const chat = $('chat'), input = $('input');
-const newWllama = () => new Wllama({
+const wllama = new Wllama({
   default: 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.8.1/esm/wasm/wllama.wasm'
 }, { suppressNativeLog: true });
-let wllama = newWllama();
-let device = 'CPU';
 let ctrl = null;
 let history = [];
 
@@ -196,33 +194,17 @@ async function loadModel() {
       $('info').textContent = `AI 모델 다운로드 중... (최초 1회) ${(l / 1e6).toFixed(0)} / ${(t / 1e6).toFixed(0)} MB (${p}%)`;
     });
     $('info').textContent = '준비 중…';
-    const files = [modelBlob];
-    const load = async gpu => {
-      await wllama.loadModel(files, {
-        n_ctx: 65536,
-        n_batch: 2048,
-        n_ubatch: 256,
-        n_threads: gpu ? Math.min(4, CORES) : Math.min(8, CORES),
-        n_gpu_layers: gpu ? 999 : 0,
-        ...(gpu ? {} : { no_kv_offload: true }),
-        cache_type_k: 'q5_1',
-        cache_type_v: 'q4_1',
-        flash_attn: true
-      });
-      await wllama.createChatCompletion({ messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, chat_template_kwargs: { enable_thinking: false } });
-    };
-    let gpuOk = false;
-    if (navigator.gpu) {
-      $('info').textContent = '준비 중… (GPU)';
-      try { await load(true); gpuOk = true; }
-      catch (e) {
-        console.warn('GPU 실패 → CPU로 전환', e);
-        try { await wllama.exit(); } catch {}
-        wllama = newWllama();
-      }
-    }
-    if (!gpuOk) { $('info').textContent = '준비 중… (CPU)'; await load(false); }
-    device = gpuOk ? 'GPU' : 'CPU';
+    await wllama.loadModel([modelBlob], {
+      n_ctx: 65536,
+      n_batch: 2048,
+      n_ubatch: 256,
+      n_threads: Math.min(N_THREADS, navigator.hardwareConcurrency || N_THREADS),
+      n_gpu_layers: 0,
+      no_kv_offload: true,
+      cache_type_k: 'q5_1',
+      cache_type_v: 'q4_1',
+      flash_attn: true
+    });
     $('status').remove();
     $('send').disabled = false;
     input.focus();
