@@ -69,14 +69,6 @@ footer{position:relative;padding:8px max(16px,calc((100% - var(--col)) / 2)) 18p
 textarea{width:100%;resize:none;max-height:200px;border:0;background:transparent;color:var(--fg);padding:2px;font:inherit;outline:none}
 textarea::placeholder{color:#a3a3a3}
 .tools{display:flex;justify-content:flex-end;align-items:center;gap:8px}
-#attach{margin-right:auto;width:34px;height:34px;padding:0;border-radius:17px;background:#fff;color:var(--fg);border:1px solid #e5e5e5;font-size:20px;font-weight:400;line-height:32px}
-#attach:not(:disabled):hover{background:#f5f5f5;opacity:1}
-#thumbs{display:flex;flex-wrap:wrap;gap:8px;padding-top:4px}
-#thumbs:empty{display:none}
-.thumb{position:relative;width:64px;height:64px}
-.thumb img{width:100%;height:100%;object-fit:cover;border-radius:10px;border:1px solid var(--line)}
-.thumb button{position:absolute;top:-6px;right:-6px;width:20px;height:20px;padding:0;border-radius:10px;font-size:12px;line-height:20px}
-.msg.user img{display:block;max-width:220px;max-height:220px;border-radius:12px;margin-bottom:6px}
 
 button{background:var(--accent);color:#fff;border:0;border-radius:20px;padding:10px 18px;cursor:pointer;font:inherit;transition:opacity .2s,transform .5s cubic-bezier(.34,2,.5,1),background-color .2s,color .2s,border-color .2s;-webkit-tap-highlight-color:transparent}
 button:not(:disabled):hover{opacity:.85}
@@ -122,11 +114,8 @@ button:disabled{opacity:.5;cursor:default}
 <footer>
 <button id="down" type="button" title="맨 아래로" hidden>↓</button>
 <form id="form">
-<div id="thumbs"></div>
-<input id="file" type="file" accept="image/*" multiple hidden>
 <textarea id="input" rows="1" placeholder="메시지를 입력하세요"></textarea>
 <div class="tools">
-<button id="attach" type="button" title="이미지 첨부" hidden>+</button>
 <button id="send" type="submit" title="보내기" disabled>↑</button>
 <button id="stop" type="button" title="중지" hidden>■</button>
 </div>
@@ -144,10 +133,6 @@ const md = text => DOMPurify.sanitize(marked.parse(text));
 
 const MODEL_URL = 'https://huggingface.co/jupiter-ai/Jupiter-V3/resolve/main/ai.gguf';
 const MODEL_FILE = 'ai.gguf';
-const MMPROJ_URL = 'https://huggingface.co/jupiter-ai/Jupiter-V3/resolve/main/mmproj.gguf';
-const MMPROJ_FILE = 'mmproj.gguf';
-const IMG_MAX = 768;
-let vision = false;
 const CORES = navigator.hardwareConcurrency || 4;
 
 const AD = { text: '이곳에 월 1만원으로 독점 광고하기', url: 'mailto:minupark@anplick.com' };
@@ -170,7 +155,9 @@ async function opfsDir() {
 async function fetchFile(url, name, onProg) {
   const dir = await opfsDir();
   if (dir) {
-
+    for (const old of ['mmproj.gguf', 'mmproj.gguf.done']) {
+      try { await dir.removeEntry(old); } catch {}
+    }
     try {
       await dir.getFileHandle(name + '.done');
       const f = await (await dir.getFileHandle(name)).getFile();
@@ -206,19 +193,10 @@ async function loadModel() {
     const modelBlob = await fetchFile(MODEL_URL, MODEL_FILE, (l, t) => {
       const p = t ? Math.round(l / t * 100) : 0;
       $('bar').firstElementChild.style.width = p + '%';
-      $('info').textContent = `(1/2) AI 모델 다운로드 중... (최초 1회) ${(l / 1e6).toFixed(0)} / ${(t / 1e6).toFixed(0)} MB (${p}%)`;
+      $('info').textContent = `AI 모델 다운로드 중... (최초 1회) ${(l / 1e6).toFixed(0)} / ${(t / 1e6).toFixed(0)} MB (${p}%)`;
     });
     $('info').textContent = '준비 중…';
-    let mmprojBlob = null;
-    try {
-      mmprojBlob = await fetchFile(MMPROJ_URL, MMPROJ_FILE, (l, t) => {
-        const p = t ? Math.round(l / t * 100) : 0;
-        $('bar').firstElementChild.style.width = p + '%';
-        $('info').textContent = `(2/2) 이미지 인식 모델 다운로드 중... (최초 1회) ${(l / 1e6).toFixed(0)} / ${(t / 1e6).toFixed(0)} MB (${p}%)`;
-      });
-    } catch (e) { console.warn('mmproj 없음 → 텍스트 전용', e); }
-    $('info').textContent = '준비 중…';
-    const files = mmprojBlob ? [modelBlob, mmprojBlob] : [modelBlob];
+    const files = [modelBlob];
     const load = async gpu => {
       await wllama.loadModel(files, {
         n_ctx: 65536,
@@ -245,8 +223,6 @@ async function loadModel() {
     }
     if (!gpuOk) { $('info').textContent = '준비 중… (CPU)'; await load(false); }
     device = gpuOk ? 'GPU' : 'CPU';
-    vision = !!mmprojBlob;
-    $('attach').hidden = !vision;
     $('status').remove();
     $('send').disabled = false;
     input.focus();
@@ -259,47 +235,6 @@ async function loadModel() {
 }
 
 loadModel();
-
-let pending = [];
-async function shrink(file) {
-  const bmp = await createImageBitmap(file);
-  const k = Math.min(1, IMG_MAX / Math.max(bmp.width, bmp.height));
-  const c = document.createElement('canvas');
-  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
-  const g = c.getContext('2d');
-  g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
-  g.drawImage(bmp, 0, 0, c.width, c.height);
-  bmp.close();
-  return new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
-}
-function drawThumbs() {
-  $('thumbs').replaceChildren(...pending.map((b, i) => {
-    const d = document.createElement('div'); d.className = 'thumb';
-    const img = document.createElement('img'); img.src = URL.createObjectURL(b);
-    const x = document.createElement('button'); x.type = 'button'; x.textContent = '×'; x.title = '빼기';
-    x.onclick = () => { pending.splice(i, 1); drawThumbs(); };
-    d.append(img, x); return d;
-  }));
-}
-async function addImages(files) {
-  if (!vision) return;
-  for (const f of files) {
-    if (!f.type.startsWith('image/')) continue;
-    try { pending.push(await shrink(f)); } catch (e) { console.warn(e); }
-  }
-  drawThumbs(); input.focus();
-}
-$('attach').onclick = () => $('file').click();
-$('file').onchange = e => { addImages([...e.target.files]); e.target.value = ''; };
-input.addEventListener('paste', e => {
-  const fs = [...e.clipboardData.files];
-  if (vision && fs.some(f => f.type.startsWith('image/'))) { e.preventDefault(); addImages(fs); }
-});
-$('form').addEventListener('dragover', e => { if (vision) e.preventDefault(); });
-$('form').addEventListener('drop', e => { if (!vision) return; e.preventDefault(); addImages([...e.dataTransfer.files]); });
-const toMessages = h => Promise.all(h.map(async m => m.images
-  ? { role: m.role, content: [...await Promise.all(m.images.map(async b => ({ type: 'image', data: await b.arrayBuffer() }))), { type: 'text', text: m.content }] }
-  : { role: m.role, content: m.content }));
 
 function addMsg(role, text) {
   const d = document.createElement('div');
@@ -362,15 +297,12 @@ document.addEventListener('touchstart', () => {}, { passive: true });
 
 $('form').addEventListener('submit', async e => {
   e.preventDefault();
-  const imgs = pending;
-  const text = input.value.trim() || (imgs.length ? '이 이미지를 설명해 주세요.' : '');
+  const text = input.value.trim();
   if (!text || $('send').disabled || ctrl) return;
-  pending = []; drawThumbs();
   const hist = history;
 
-  hist.push(imgs.length ? { role: 'user', content: text, images: imgs } : { role: 'user', content: text });
-  const um = addMsg('user', text);
-  um.prepend(...imgs.map(b => Object.assign(document.createElement('img'), { src: URL.createObjectURL(b) })));
+  hist.push({ role: 'user', content: text });
+  addMsg('user', text);
   input.value = ''; input.style.height = 'auto';
 
   const out = addMsg('bot thinking', '(생각하는 중...)');
@@ -404,7 +336,7 @@ $('form').addEventListener('submit', async e => {
   };
   try {
     const stream = await Promise.race([quiet(wllama.createChatCompletion({
-      messages: await toMessages(hist), stream: true,
+      messages: hist, stream: true,
       temperature: 0.6, top_p: 0.75, top_k: 20,
       chat_template_kwargs: { enable_thinking: false },
       abortSignal: ctrl.signal
@@ -442,7 +374,7 @@ const welcome = $('welcome');
 $('new').onclick = () => {
   stop(); ctrl = null;
   $('send').hidden = false; $('stop').hidden = true;
-  history = []; pending = []; drawThumbs();
+  history = [];
   chat.replaceChildren(welcome);
   input.focus();
 };
